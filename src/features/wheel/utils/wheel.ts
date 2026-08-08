@@ -3,6 +3,8 @@ import type { Book } from "../../../types/book";
 export const WHEEL_CENTER = 150;
 export const WHEEL_RADIUS = 134;
 export const WHEEL_INNER_RADIUS = 52;
+export const WHEEL_SPIN_DURATION_MS = 5200;
+export const WHEEL_SPIN_EASING = "cubic-bezier(0.08, 0.78, 0.12, 1)";
 
 const radians = (degrees: number) => (degrees * Math.PI) / 180;
 

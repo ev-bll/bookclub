@@ -1,5 +1,5 @@
 import { useCallback, useMemo, useState } from "react";
-import { winnerFromRotation } from "../utils/wheel";
+import { WHEEL_SPIN_DURATION_MS, winnerFromRotation } from "../utils/wheel";
 import type { Book } from "../../../types/book";
 
 export function useWheel(library: Book[], activeIds: Set<string>) {
@@ -24,8 +24,8 @@ export function useWheel(library: Book[], activeIds: Set<string>) {
       setSpinning(false);
       setWinner(winnerFromRotation(next, activeBooks));
       setShowWinner(true);
-    }, 4400);
+    }, WHEEL_SPIN_DURATION_MS);
   }, [activeBooks, rotation, spinning]);
 
-  return { rotation, spinning, winner, showWinner, setShowWinner, reset, spin, setSpinning };
+  return { activeBooks, rotation, spinning, winner, showWinner, setShowWinner, reset, spin, setSpinning };
 }

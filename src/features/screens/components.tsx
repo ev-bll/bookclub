@@ -3,11 +3,20 @@ import { AnimatePresence, motion } from "motion/react";
 import { ArrowRight, BookOpen, Check, ChevronLeft, Plus, Search, SlidersHorizontal, Star, Trash2, X } from "lucide-react";
 import { SEARCH_SUGGESTIONS } from "../../constants/books";
 import { getBookSynopsis, searchBooks } from "../library/api/openLibrary";
-import { degreesToRadians as rad, piePath } from "../wheel/utils/wheel";
+import { degreesToRadians as rad, piePath, WHEEL_SPIN_DURATION_MS, WHEEL_SPIN_EASING } from "../wheel/utils/wheel";
+import { preloadBookCovers } from "../../services/coverPreload";
 import { resolveGoogleBooksCover } from "../../services/googleBooks";
 import type { Book } from "../../types/book";
 
-function CoverImage({ book, style }: { book: Book; style?: React.CSSProperties }) {
+function CoverImage({
+  book,
+  style,
+  priority = false,
+}: {
+  book: Book;
+  style?: React.CSSProperties;
+  priority?: boolean;
+}) {
   const [src, setSrc] = useState<string | null>(book.coverUrl);
   const triedGB       = React.useRef(false);
 
@@ -23,6 +32,9 @@ function CoverImage({ book, style }: { book: Book; style?: React.CSSProperties }
       src={src}
       alt={book.title}
       style={style}
+      loading={priority ? "eager" : "lazy"}
+      fetchPriority={priority ? "high" : "auto"}
+      decoding={priority ? "sync" : "async"}
       onError={async e => {
         (e.currentTarget as HTMLImageElement).style.visibility = "hidden";
         if (triedGB.current) { setSrc(null); return; }
@@ -67,18 +79,7 @@ const CX = 150, CY = 150, WR = 134, IR = 52;
 function BookWheelSVG({ books, rotation, spinning }: { books: Book[]; rotation: number; spinning: boolean }) {
   const [failedCovers, setFailedCovers] = useState<Set<string>>(new Set());
   useEffect(() => {
-    books.forEach(b => {
-      if (!b.coverUrl) return;
-      const img = new window.Image();
-      img.crossOrigin = "anonymous";
-      img.onload = () => {
-        if (img.naturalWidth < 10) {
-          setFailedCovers(prev => new Set(prev).add(b.id));
-        }
-      };
-      img.onerror = () => setFailedCovers(prev => new Set(prev).add(b.id));
-      img.src = b.coverUrl;
-    });
+    setFailedCovers(new Set());
   }, [books.map(b => b.id).join(",")]);
   const n       = books.length;
   const sdeg    = n > 0 ? 360 / n : 360;
@@ -141,7 +142,15 @@ function BookWheelSVG({ books, rotation, spinning }: { books: Book[]; rotation: 
         <circle key={i} cx={lt.x} cy={lt.y} r={lt.big ? 3.2 : 2}
           fill={lt.big ? "#F4A261" : "#FCD9A8"} opacity={lt.big ? 0.82 : 0.5} />
       ))}
-      <g filter="url(#wglow)" style={{ transformOrigin: `${CX}px ${CY}px`, transform: `rotate(${rotation}deg)`, transition: spinning ? "transform 4s cubic-bezier(0.08, 0.82, 0.18, 1)" : "none", willChange: "transform" }}>
+      <g
+        filter="url(#wglow)"
+        style={{
+          transformOrigin: `${CX}px ${CY}px`,
+          transform: `rotate(${rotation}deg)`,
+          transition: spinning ? `transform ${WHEEL_SPIN_DURATION_MS}ms ${WHEEL_SPIN_EASING}` : "none",
+          willChange: "transform",
+        }}
+      >
         {books.map((b, i) => {
           const mid = -90 + (i + 0.5) * sdeg;
           const rot = mid + 90;
@@ -157,7 +166,8 @@ function BookWheelSVG({ books, rotation, spinning }: { books: Book[]; rotation: 
                 {b.coverUrl && !failedCovers.has(b.id) && (
                   <g transform={`rotate(${rot}, ${sx}, ${sy})`}>
                     <image href={b.coverUrl} x={sx - imgSize / 2} y={sy - imgSize / 2}
-                      width={imgSize} height={imgSize} preserveAspectRatio="xMidYMid slice" />
+                      width={imgSize} height={imgSize} preserveAspectRatio="xMidYMid slice"
+                      onError={() => setFailedCovers(previous => new Set(previous).add(b.id))} />
                   </g>
                 )}
                 {b.coverUrl && !failedCovers.has(b.id) && <path d={piePath(i, n, WR, CX, CY)} fill="url(#innerLight)" />}
@@ -394,7 +404,7 @@ function WinnerModal({ book, onClose, onSpin }: { book: Book; onClose: () => voi
         <div style={{ display: "flex", gap: 18, alignItems: "flex-start", marginBottom: 22 }}>
           <div style={{ width: 90, height: 126, borderRadius: 18, flexShrink: 0, overflow: "hidden", background: `linear-gradient(155deg, ${book.c1}, ${book.c2})`, boxShadow: "0 10px 28px rgba(44,26,14,0.28)", position: "relative", display: "flex", alignItems: "flex-end", justifyContent: "center", paddingBottom: 10 }}>
             <BookOpen size={26} strokeWidth={1.2} color="rgba(255,255,255,0.35)" />
-            <CoverImage book={book} style={{ position: "absolute", inset: 0, width: "100%", height: "100%", objectFit: "cover", display: "block" } as React.CSSProperties} />
+            <CoverImage book={book} priority style={{ position: "absolute", inset: 0, width: "100%", height: "100%", objectFit: "cover", display: "block" } as React.CSSProperties} />
           </div>
           <div style={{ flex: 1, minWidth: 0 }}>
             <div style={{ display: "flex", flexWrap: "wrap", gap: 5, marginBottom: 10 }}>
@@ -468,7 +478,7 @@ function SearchResults({ results, loading, libraryIds, onAdd, onRemove, onViewDe
   );
   return (
     <div style={{ padding: "8px 14px 12px" }}>
-      {results.map(book => {
+      {results.map((book, index) => {
         const inLib = libraryIds.has(book.id);
         return (
           <div key={book.id} onClick={() => onViewDetail(book)}
@@ -476,7 +486,7 @@ function SearchResults({ results, loading, libraryIds, onAdd, onRemove, onViewDe
             onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "rgba(197,149,106,0.08)"; }}
             onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "transparent"; }}>
             <div style={{ width: 40, height: 56, borderRadius: 7, flexShrink: 0, overflow: "hidden", boxShadow: "0 2px 8px rgba(44,26,14,0.2)", background: `linear-gradient(155deg, ${book.c1}, ${book.c2})` }}>
-              <CoverImage book={book} style={{ width: "100%", height: "100%", objectFit: "cover", display: "block" }} />
+              <CoverImage book={book} priority={index < 4} style={{ width: "100%", height: "100%", objectFit: "cover", display: "block" }} />
             </div>
             <div style={{ flex: 1, minWidth: 0 }}>
               <p style={{ fontFamily: "Playfair Display, serif", fontSize: 14, fontWeight: 600, color: "#2C1A0E", margin: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{book.title}</p>
@@ -505,13 +515,26 @@ function SearchSheet({ library, onAdd, onRemove, onViewDetail, onClose }: {
   const libraryIds = useMemo(() => new Set(library.map(b => b.id)), [library]);
 
   useEffect(() => {
+    const link = document.createElement("link");
+    link.rel = "preconnect";
+    link.href = "https://covers.openlibrary.org";
+    link.crossOrigin = "anonymous";
+    document.head.appendChild(link);
+    return () => link.remove();
+  }, []);
+
+  useEffect(() => {
     if (!query.trim()) { setResults([]); setLoading(false); return; }
     setLoading(true);
     const t = setTimeout(async () => {
-      try { setResults(await searchBooks(query)); }
+      try {
+        const books = await searchBooks(query);
+        preloadBookCovers(books);
+        setResults(books);
+      }
       catch { setResults([]); }
       finally { setLoading(false); }
-    }, 500);
+    }, 250);
     return () => clearTimeout(t);
   }, [query]);
 
@@ -560,12 +583,12 @@ function SearchSheet({ library, onAdd, onRemove, onViewDetail, onClose }: {
 // SCREEN 1 — BIBLIOTECA
 // ═══════════════════════════════════════════════════════════════════════════════
 
-function LibraryCard({ book, onTap, onRemove }: { book: Book; onTap: () => void; onRemove: () => void }) {
+function LibraryCard({ book, onTap, onRemove, priority }: { book: Book; onTap: () => void; onRemove: () => void; priority: boolean }) {
   return (
     <div onClick={onTap}
       style={{ borderRadius: 18, overflow: "hidden", background: "#FDF9F1", boxShadow: "0 2px 12px rgba(44,26,14,0.09)", cursor: "pointer", display: "flex", flexDirection: "column" }}>
       <div style={{ height: 205, position: "relative", overflow: "hidden", background: `linear-gradient(155deg, ${book.c1}, ${book.c2})` }}>
-        <CoverImage book={book} style={{ width: "100%", height: "100%", objectFit: "cover", display: "block" }} />
+        <CoverImage book={book} priority={priority} style={{ width: "100%", height: "100%", objectFit: "cover", display: "block" }} />
         <div style={{ position: "absolute", inset: 0, background: "linear-gradient(135deg, rgba(255,255,255,0.12) 0%, transparent 55%)" }} />
         <button onClick={e => { e.stopPropagation(); onRemove(); }}
           style={{ position: "absolute", top: 8, right: 8, width: 24, height: 24, borderRadius: "50%", border: "none", cursor: "pointer", background: "rgba(0,0,0,0.32)", backdropFilter: "blur(4px)", display: "flex", alignItems: "center", justifyContent: "center" }}>
@@ -639,10 +662,11 @@ export function LibraryScreen({ library, onAdd, onRemove, onViewDetail, onGoToWh
           </div>
         ) : (
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16, padding: "14px 16px 16px" }}>
-            {library.map(book => (
+            {library.map((book, index) => (
               <LibraryCard key={book.id} book={book}
                 onTap={() => handleViewDetail(book)}
-                onRemove={() => onRemove(book.id)} />
+                onRemove={() => onRemove(book.id)}
+                priority={index < 4} />
             ))}
           </div>
         )}
@@ -781,6 +805,11 @@ export function WheelScreen({ library, activeIds, rotation, spinning, onSpin, on
   const [showFilter, setShowFilter] = useState(false);
   const activeBooks = useMemo(() => library.filter(b => activeIds.has(b.id)), [library, activeIds]);
   const isFiltered  = activeBooks.length < library.length;
+
+  useEffect(() => {
+    // Warm the browser cache before the SVG requests these same covers.
+    preloadBookCovers(activeBooks, activeBooks.length);
+  }, [activeBooks]);
 
   return (
     <div style={{ position: "relative", height: "100%", background: "#F8F2E5" }}>

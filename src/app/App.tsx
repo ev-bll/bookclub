@@ -3,12 +3,13 @@ import { AnimatePresence, motion } from "motion/react";
 import { LibraryScreen, WheelScreen } from "../features/screens/components";
 import { useLibrary } from "../features/library/hooks/useLibrary";
 import { useWheel } from "../features/wheel/hooks/useWheel";
+import { preloadBookCovers } from "../services/coverPreload";
 
 type Screen = "library" | "wheel";
 
 export default function App() {
   const { library, activeIds, addBook, removeBook: removeStoredBook, toggleActive: toggleStoredBook, selectAll: selectAllStored, selectOne } = useLibrary();
-  const { rotation, spinning, winner, showWinner, setShowWinner, reset, spin, setSpinning } = useWheel(library, activeIds);
+  const { activeBooks, rotation, spinning, winner, showWinner, setShowWinner, reset, spin, setSpinning } = useWheel(library, activeIds);
   const [screen, setScreen] = useState<Screen>("library");
   const [direction, setDirection] = useState<1 | -1>(1);
 
@@ -33,9 +34,10 @@ export default function App() {
   }, [reset, selectOne]);
 
   const goToWheel = useCallback(() => {
+    preloadBookCovers(activeBooks, activeBooks.length);
     setDirection(1);
     setScreen("wheel");
-  }, []);
+  }, [activeBooks]);
 
   const goToLibrary = useCallback(() => {
     setDirection(-1);
