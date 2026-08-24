@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { AnimatePresence, motion } from "motion/react";
-import { ArrowRight, BookOpen, Check, ChevronLeft, Plus, Search, SlidersHorizontal, Star, Trash2, X } from "lucide-react";
+import { ArrowRight, BookOpen, Check, ChevronLeft, Pencil, Plus, Search, SlidersHorizontal, Star, Trash2, X } from "lucide-react";
 import { SEARCH_SUGGESTIONS } from "../../constants/books";
 import { getBookSynopsis, searchBooks } from "../library/api/openLibrary";
 import { degreesToRadians as rad, piePath, WHEEL_SPIN_DURATION_MS, WHEEL_SPIN_EASING } from "../wheel/utils/wheel";
@@ -18,14 +18,16 @@ function CoverImage({
   priority?: boolean;
 }) {
   const [src, setSrc] = useState<string | null>(book.coverUrl);
+  const [failed, setFailed] = useState(false);
   const triedGB       = React.useRef(false);
 
   useEffect(() => {
     setSrc(book.coverUrl);
+    setFailed(false);
     triedGB.current = false;
-  }, [book.id]);
+  }, [book.id, book.coverUrl]);
 
-  if (!src) return null;
+  if (!src || failed) return null;
   return (
     <img
       key={src}
@@ -37,10 +39,17 @@ function CoverImage({
       decoding={priority ? "sync" : "async"}
       onError={async e => {
         (e.currentTarget as HTMLImageElement).style.visibility = "hidden";
-        if (triedGB.current) { setSrc(null); return; }
+        if (triedGB.current) {
+          setFailed(true);
+          return;
+        }
         triedGB.current = true;
         const gb = await resolveGoogleBooksCover(book.title, book.author);
-        setSrc(gb);
+        if (gb) {
+          setSrc(gb);
+          return;
+        }
+        setFailed(true);
       }}
     />
   );
@@ -78,8 +87,10 @@ const CX = 150, CY = 150, WR = 134, IR = 52;
 
 function BookWheelSVG({ books, rotation, spinning }: { books: Book[]; rotation: number; spinning: boolean }) {
   const [failedCovers, setFailedCovers] = useState<Set<string>>(new Set());
+  const [fallbackCovers, setFallbackCovers] = useState<Map<string, string>>(new Map());
   useEffect(() => {
     setFailedCovers(new Set());
+    setFallbackCovers(new Map());
   }, [books.map(b => b.id).join(",")]);
   const n       = books.length;
   const sdeg    = n > 0 ? 360 / n : 360;
@@ -163,14 +174,25 @@ function BookWheelSVG({ books, rotation, spinning }: { books: Book[]; rotation: 
                 {(!b.coverUrl || failedCovers.has(b.id)) && (
                   <path d={piePath(i, n, WR, CX, CY)} fill={b.c1} />
                 )}
-                {b.coverUrl && !failedCovers.has(b.id) && (
+                {(fallbackCovers.get(b.id) || b.coverUrl) && !failedCovers.has(b.id) && (
                   <g transform={`rotate(${rot}, ${sx}, ${sy})`}>
-                    <image href={b.coverUrl} x={sx - imgSize / 2} y={sy - imgSize / 2}
+                    <image href={fallbackCovers.get(b.id) || b.coverUrl!} x={sx - imgSize / 2} y={sy - imgSize / 2}
                       width={imgSize} height={imgSize} preserveAspectRatio="xMidYMid slice"
-                      onError={() => setFailedCovers(previous => new Set(previous).add(b.id))} />
+                      onError={async () => {
+                        if (fallbackCovers.has(b.id)) {
+                          setFailedCovers(previous => new Set(previous).add(b.id));
+                          return;
+                        }
+                        const fallback = await resolveGoogleBooksCover(b.title, b.author);
+                        if (fallback) {
+                          setFallbackCovers(previous => new Map(previous).set(b.id, fallback));
+                        } else {
+                          setFailedCovers(previous => new Set(previous).add(b.id));
+                        }
+                      }} />
                   </g>
                 )}
-                {b.coverUrl && !failedCovers.has(b.id) && <path d={piePath(i, n, WR, CX, CY)} fill="url(#innerLight)" />}
+                {(fallbackCovers.get(b.id) || b.coverUrl) && !failedCovers.has(b.id) && <path d={piePath(i, n, WR, CX, CY)} fill="url(#innerLight)" />}
                 <path d={piePath(i, n, WR, CX, CY)} fill="url(#rim)" />
               </g>
               <path d={piePath(i, n, WR, CX, CY)} fill="none" stroke="rgba(253,248,239,0.6)" strokeWidth="1.5" />
@@ -390,7 +412,7 @@ function FilterPanel({ library, activeIds, onToggle, onSelectAll, onSelectNone, 
   );
 }
 
-function WinnerModal({ book, onClose, onSpin }: { book: Book; onClose: () => void; onSpin: () => void }) {
+function WinnerModal({ book, onClose, onSpin, onStartReading }: { book: Book; onClose: () => void; onSpin: () => void; onStartReading: () => void }) {
   return (
     <>
       <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} transition={{ duration: 0.2 }} onClick={onClose}
@@ -421,7 +443,7 @@ function WinnerModal({ book, onClose, onSpin }: { book: Book; onClose: () => voi
           </div>
         </div>
         <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-          <button onClick={onClose}
+          <button onClick={() => { onClose(); onStartReading(); }}
             style={{ width: "100%", padding: "15px 0", borderRadius: 20, border: "none", cursor: "pointer", background: "linear-gradient(135deg, #B5643A, #C4956A)", fontFamily: "DM Sans, sans-serif", fontSize: 15, fontWeight: 600, color: "white", boxShadow: "0 5px 18px rgba(181,100,58,0.38)" }}
             onMouseDown={e => { (e.currentTarget as HTMLElement).style.transform = "scale(0.97)"; }}
             onMouseUp={e => { (e.currentTarget as HTMLElement).style.transform = "scale(1)"; }}>
@@ -583,17 +605,41 @@ function SearchSheet({ library, onAdd, onRemove, onViewDetail, onClose }: {
 // SCREEN 1 — BIBLIOTECA
 // ═══════════════════════════════════════════════════════════════════════════════
 
-function LibraryCard({ book, onTap, onRemove, priority }: { book: Book; onTap: () => void; onRemove: () => void; priority: boolean }) {
+function LibraryCard({ book, onTap, onRemove, priority, editMode, selected, onToggleSelect, onLongPress }: { book: Book; onTap: () => void; onRemove: () => void; priority: boolean; editMode?: boolean; selected?: boolean; onToggleSelect?: () => void; onLongPress?: () => void }) {
+  const longPressTimer = React.useRef<number | null>(null);
+
+  const clearLongPress = () => {
+    if (longPressTimer.current) {
+      window.clearTimeout(longPressTimer.current);
+      longPressTimer.current = null;
+    }
+  };
+
+  const startLongPress = () => {
+    clearLongPress();
+    longPressTimer.current = window.setTimeout(() => {
+      onLongPress?.();
+    }, 450);
+  };
+
   return (
-    <div onClick={onTap}
-      style={{ borderRadius: 18, overflow: "hidden", background: "#FDF9F1", boxShadow: "0 2px 12px rgba(44,26,14,0.09)", cursor: "pointer", display: "flex", flexDirection: "column" }}>
+    <div
+      onClick={editMode ? (onToggleSelect ?? (() => {})) : onTap}
+      onPointerDown={startLongPress}
+      onPointerUp={clearLongPress}
+      onPointerLeave={clearLongPress}
+      onPointerCancel={clearLongPress}
+      style={{ borderRadius: 18, overflow: "hidden", background: "#FDF9F1", boxShadow: "0 2px 12px rgba(44,26,14,0.09)", cursor: "pointer", display: "flex", flexDirection: "column", position: "relative" }}>
       <div style={{ height: 205, position: "relative", overflow: "hidden", background: `linear-gradient(155deg, ${book.c1}, ${book.c2})` }}>
         <CoverImage book={book} priority={priority} style={{ width: "100%", height: "100%", objectFit: "cover", display: "block" }} />
         <div style={{ position: "absolute", inset: 0, background: "linear-gradient(135deg, rgba(255,255,255,0.12) 0%, transparent 55%)" }} />
-        <button onClick={e => { e.stopPropagation(); onRemove(); }}
-          style={{ position: "absolute", top: 8, right: 8, width: 24, height: 24, borderRadius: "50%", border: "none", cursor: "pointer", background: "rgba(0,0,0,0.32)", backdropFilter: "blur(4px)", display: "flex", alignItems: "center", justifyContent: "center" }}>
-          <X size={11} color="white" strokeWidth={2.5} />
-        </button>
+        {editMode && (
+          <button onClick={e => { e.stopPropagation(); onToggleSelect && onToggleSelect(); }}
+            aria-pressed={selected}
+            style={{ position: "absolute", top: 8, right: 8, width: 30, height: 30, borderRadius: "50%", border: "none", cursor: "pointer", background: selected ? "#B5643A" : "rgba(255,255,255,0.32)", display: "flex", alignItems: "center", justifyContent: "center", color: selected ? "white" : "#2C1A0E", fontWeight: 700 }}>
+            {selected ? <Check size={12} color="white" /> : <X size={12} color="#2C1A0E" />}
+          </button>
+        )}
       </div>
       <div style={{ padding: "9px 11px 12px" }}>
         <p style={{ fontFamily: "Playfair Display, serif", fontSize: 12.5, fontWeight: 600, color: "#2C1A0E", margin: 0, lineHeight: 1.3, display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden" }}>{book.title}</p>
@@ -603,15 +649,19 @@ function LibraryCard({ book, onTap, onRemove, priority }: { book: Book; onTap: (
   );
 }
 
-export function LibraryScreen({ library, onAdd, onRemove, onViewDetail, onGoToWheel }: {
+export function LibraryScreen({ library, onAdd, onRemove, onRemoveMany, onClearAll, onViewDetail, onGoToWheel }: {
   library: Book[];
   onAdd: (b: Book) => void;
   onRemove: (id: string) => void;
+  onRemoveMany?: (ids: string[]) => void;
+  onClearAll?: () => void;
   onViewDetail: (b: Book) => void;
   onGoToWheel: () => void;
 }) {
   const [showSearch, setShowSearch] = useState(false);
   const [detailBook, setDetailBook] = useState<Book | null>(null);
+  const [editMode, setEditMode] = useState(false);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const libraryIds = useMemo(() => new Set(library.map(b => b.id)), [library]);
   const canSpin    = library.length >= 2;
 
@@ -619,20 +669,68 @@ export function LibraryScreen({ library, onAdd, onRemove, onViewDetail, onGoToWh
     setDetailBook(book);
   };
 
+  const toggleSelect = (id: string) => {
+    setSelectedIds(prev => {
+      const next = new Set(prev);
+      next.has(id) ? next.delete(id) : next.add(id);
+      return next;
+    });
+  };
+
+  const clearSelection = () => setSelectedIds(new Set());
+
+  const handleDeleteSelected = () => {
+    if (selectedIds.size === 0) return;
+    const ok = window.confirm(`Eliminar ${selectedIds.size} libro(s)? Esta acción no se puede deshacer.`);
+    if (!ok) return;
+    if (onRemoveMany) onRemoveMany(Array.from(selectedIds));
+    clearSelection();
+    setEditMode(false);
+  };
+
+  const handleDeleteAll = () => {
+    const ok = window.confirm(`Eliminar todos los libros (${library.length})? Esta acción no se puede deshacer.`);
+    if (!ok) return;
+    if (onClearAll) onClearAll();
+    clearSelection();
+    setEditMode(false);
+  };
+
   return (
     <div style={{ position: "relative", display: "flex", flexDirection: "column", height: "100%", background: "#F8F2E5" }}>
-      <StatusBar />
 
       {/* Header */}
-      <div style={{ padding: "10px 22px 0", display: "flex", alignItems: "flex-start", justifyContent: "space-between" }}>
+      <div style={{ padding: "10px 22px 0", display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 12 }}>
         <div>
-          <h1 style={{ fontFamily: "Playfair Display, serif", fontSize: 24, fontWeight: 600, color: "#2C1A0E", margin: 0 }}>Mis libros</h1>
+          <h1 style={{ fontFamily: "Playfair Display, serif", fontSize: 24, fontWeight: 600, color: "#2C1A0E", margin: 0 }}>Mi biblioteca</h1>
           <p style={{ fontFamily: "DM Sans, sans-serif", fontSize: 13, color: "#8A7060", margin: "3px 0 0" }}>
             {library.length === 0
               ? "Empieza añadiendo libros ✨"
-              : `${library.length} ${library.length === 1 ? "libro" : "libros"} · todos en la ruleta`}
+              : `${library.length} ${library.length === 1 ? "libro" : "libros"}`}
           </p>
         </div>
+        {library.length > 0 && (
+          <button
+            type="button"
+            onClick={() => { setEditMode(e => !e); if (editMode) clearSelection(); }}
+            aria-label={editMode ? "Cancelar edición" : "Editar biblioteca"}
+            style={{
+              width: 40,
+              height: 40,
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              borderRadius: 12,
+              border: "1px solid rgba(139,100,70,0.12)",
+              background: editMode ? "rgba(181,100,58,0.12)" : "rgba(255,255,255,0.45)",
+              cursor: "pointer",
+              color: editMode ? "#B5643A" : "#2C1A0E",
+              boxShadow: "0 2px 8px rgba(44,26,14,0.05)"
+            }}
+          >
+            {editMode ? <X size={16} strokeWidth={2.3} /> : <Pencil size={16} strokeWidth={2.3} />}
+          </button>
+        )}
       </div>
 
       {/* Fake search trigger */}
@@ -666,7 +764,15 @@ export function LibraryScreen({ library, onAdd, onRemove, onViewDetail, onGoToWh
               <LibraryCard key={book.id} book={book}
                 onTap={() => handleViewDetail(book)}
                 onRemove={() => onRemove(book.id)}
-                priority={index < 4} />
+                priority={index < 4}
+                editMode={editMode}
+                selected={selectedIds.has(book.id)}
+                onToggleSelect={() => toggleSelect(book.id)}
+                onLongPress={() => {
+                  if (!editMode) {
+                    setEditMode(true);
+                  }
+                }} />
             ))}
           </div>
         )}
@@ -674,18 +780,33 @@ export function LibraryScreen({ library, onAdd, onRemove, onViewDetail, onGoToWh
 
       {/* CTA footer */}
       <div style={{ padding: "10px 18px 32px", background: "rgba(248,242,229,0.97)", backdropFilter: "blur(12px)", borderTop: library.length >= 2 ? "1px solid rgba(139,100,70,0.10)" : "none" }}>
-        {!canSpin && library.length > 0 && (
-          <p style={{ fontFamily: "DM Sans, sans-serif", fontSize: 12, color: "#B5643A", textAlign: "center", margin: "0 0 10px", opacity: 0.75 }}>
-            Añade al menos {2 - library.length} libro{library.length === 1 ? " más" : "s"} para continuar
-          </p>
-        )}
-        {canSpin && (
-          <button onClick={onGoToWheel}
-            style={{ width: "100%", padding: "15px 0", borderRadius: 20, border: "none", cursor: "pointer", background: "linear-gradient(135deg, #B5643A, #C4956A)", fontFamily: "DM Sans, sans-serif", fontSize: 15, fontWeight: 600, color: "white", boxShadow: "0 5px 18px rgba(181,100,58,0.35)", display: "flex", alignItems: "center", justifyContent: "center", gap: 8 }}
-            onMouseDown={e => { (e.currentTarget as HTMLElement).style.transform = "scale(0.98)"; }}
-            onMouseUp={e => { (e.currentTarget as HTMLElement).style.transform = "scale(1)"; }}>
-            Ir a la ruleta <ArrowRight size={17} strokeWidth={2.2} />
-          </button>
+        {editMode ? (
+          <div style={{ display: "flex", gap: 10 }}>
+            <button onClick={handleDeleteSelected} disabled={selectedIds.size === 0}
+              style={{ flex: 1, padding: "12px 10px", borderRadius: 12, border: "none", cursor: selectedIds.size === 0 ? "default" : "pointer", background: selectedIds.size === 0 ? "rgba(139,100,70,0.08)" : "rgba(181,100,58,0.12)", fontFamily: "DM Sans, sans-serif", fontSize: 14, fontWeight: 600, color: "#B5643A" }}>
+              Eliminar seleccionados ({selectedIds.size})
+            </button>
+            <button onClick={handleDeleteAll} disabled={library.length === 0}
+              style={{ padding: "12px 10px", borderRadius: 12, border: "none", cursor: library.length === 0 ? "default" : "pointer", background: "rgba(181,100,58,0.08)", fontFamily: "DM Sans, sans-serif", fontSize: 14, fontWeight: 600, color: "#B5643A" }}>
+              Eliminar todos
+            </button>
+          </div>
+        ) : (
+          <>
+            {!canSpin && library.length > 0 && (
+              <p style={{ fontFamily: "DM Sans, sans-serif", fontSize: 12, color: "#B5643A", textAlign: "center", margin: "0 0 10px", opacity: 0.75 }}>
+                Añade al menos {2 - library.length} libro{library.length === 1 ? " más" : "s"} para continuar
+              </p>
+            )}
+            {canSpin && (
+              <button onClick={onGoToWheel}
+                style={{ width: "100%", padding: "15px 0", borderRadius: 20, border: "none", cursor: "pointer", background: "linear-gradient(135deg, #B5643A, #C4956A)", fontFamily: "DM Sans, sans-serif", fontSize: 15, fontWeight: 600, color: "white", boxShadow: "0 5px 18px rgba(181,100,58,0.35)", display: "flex", alignItems: "center", justifyContent: "center", gap: 8 }}
+                onMouseDown={e => { (e.currentTarget as HTMLElement).style.transform = "scale(0.98)"; }}
+                onMouseUp={e => { (e.currentTarget as HTMLElement).style.transform = "scale(1)"; }}>
+                Ir a la ruleta <ArrowRight size={17} strokeWidth={2.2} />
+              </button>
+            )}
+          </>
         )}
       </div>
 
@@ -740,71 +861,12 @@ function BackgroundDecors() {
   );
 }
 
-function BookListDrawer({ books }: { books: Book[] }) {
-  const [open, setOpen] = useState(false);
-  return (
-    <>
-      {/* Backdrop */}
-      <AnimatePresence>
-        {open && (
-          <motion.div
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            transition={{ duration: 0.2 }}
-            onClick={() => setOpen(false)}
-            style={{ position: "fixed", inset: 0, background: "rgba(44,26,14,0.45)", zIndex: 20 }}
-          />
-        )}
-      </AnimatePresence>
-
-      <div style={{ padding: "0 22px 32px", position: "relative", zIndex: 21 }}>
-        <button
-          onClick={() => setOpen(o => !o)}
-          style={{ display: "flex", alignItems: "center", justifyContent: "space-between", width: "100%", padding: "11px 16px", borderRadius: 16, border: "1.5px solid rgba(181,100,58,0.18)", background: "rgba(255,255,255,0.55)", backdropFilter: "blur(8px)", cursor: "pointer" }}
-        >
-          <span style={{ fontFamily: "DM Sans, sans-serif", fontSize: 12, fontWeight: 600, color: "rgba(139,100,70,0.6)", letterSpacing: "0.07em" }}>
-            EN LA RULETA · {books.length} {books.length === 1 ? "libro" : "libros"}
-          </span>
-          <ChevronLeft size={14} color="#B5643A" strokeWidth={2.5} style={{ transform: open ? "rotate(-90deg)" : "rotate(90deg)", transition: "transform 0.25s" }} />
-        </button>
-        <AnimatePresence>
-          {open && (
-            <motion.div
-              initial={{ opacity: 0, y: -6 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: -6 }}
-              transition={{ duration: 0.2 }}
-              style={{ position: "absolute", bottom: "calc(100% - 30px)", left: 22, right: 22, borderRadius: 16, background: "rgba(255,255,255,0.96)", backdropFilter: "blur(16px)", border: "1.5px solid rgba(181,100,58,0.15)", boxShadow: "0 -8px 32px rgba(44,26,14,0.18)", overflow: "hidden", zIndex: 22 }}
-            >
-              <div style={{ maxHeight: 260, overflowY: "auto", scrollbarWidth: "none" }}>
-                {books.map((book, i) => (
-                  <div key={book.id} style={{ display: "flex", alignItems: "center", gap: 12, padding: "11px 16px", borderBottom: i < books.length - 1 ? "1px solid #e8ddd5" : "none" }}>
-                    <div style={{ width: 8, height: 8, borderRadius: "50%", background: `linear-gradient(135deg, ${book.c1}, ${book.c2})`, flexShrink: 0 }} />
-                    <div style={{ flex: 1, minWidth: 0 }}>
-                      <p style={{ fontFamily: "DM Sans, sans-serif", fontSize: 13, fontWeight: 500, color: "#2C1A0E", margin: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{book.title}</p>
-                      <p style={{ fontFamily: "DM Sans, sans-serif", fontSize: 11, color: "#8A7060", margin: 0 }}>{book.author}</p>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </motion.div>
-          )}
-        </AnimatePresence>
-      </div>
-    </>
-  );
-}
-
-export function WheelScreen({ library, activeIds, rotation, spinning, onSpin, onBack, onToggleActive, onSelectAll, onSelectNone, winner, showWinner, onCloseWinner }: {
+export function WheelScreen({ library, activeIds, rotation, spinning, onSpin, onBack, winner, showWinner, onCloseWinner, onGoHome }: {
   library: Book[]; activeIds: Set<string>; rotation: number; spinning: boolean;
   onSpin: () => void; onBack: () => void;
-  onToggleActive: (id: string) => void; onSelectAll: () => void; onSelectNone: () => void;
-  winner: Book | null; showWinner: boolean; onCloseWinner: () => void;
+  winner: Book | null; showWinner: boolean; onCloseWinner: () => void; onGoHome: () => void;
 }) {
-  const [showFilter, setShowFilter] = useState(false);
   const activeBooks = useMemo(() => library.filter(b => activeIds.has(b.id)), [library, activeIds]);
-  const isFiltered  = activeBooks.length < library.length;
 
   useEffect(() => {
     // Warm the browser cache before the SVG requests these same covers.
@@ -815,7 +877,6 @@ export function WheelScreen({ library, activeIds, rotation, spinning, onSpin, on
     <div style={{ position: "relative", height: "100%", background: "#F8F2E5" }}>
       <BackgroundDecors />
       <div style={{ position: "relative", zIndex: 2, display: "flex", flexDirection: "column", height: "100%" }}>
-        <StatusBar />
 
         {/* Header */}
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "8px 22px" }}>
@@ -828,23 +889,16 @@ export function WheelScreen({ library, activeIds, rotation, spinning, onSpin, on
         </div>
 
         {/* Wheel */}
-        <div style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: "0 16px" }}>
-          <p style={{ fontFamily: "DM Sans, sans-serif", fontSize: 13, color: "#8A7060", margin: "0 0 10px" }}>Deja que el destino elija ✨</p>
+        <div style={{ flex: 1, width: "100%", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: "8px 16px 24px" }}>
+          <p style={{ fontFamily: "DM Sans, sans-serif", fontSize: 13, color: "#8A7060", margin: "0 0 8px" }}>Deja que el destino elija ✨</p>
           <WheelSection books={activeBooks} rotation={rotation} spinning={spinning} onSpin={onSpin} />
         </div>
 
-        {/* Book list drawer */}
-        <BookListDrawer books={activeBooks} />
       </div>
 
       <AnimatePresence>
-        {showFilter && (
-          <FilterPanel library={library} activeIds={activeIds} onToggle={onToggleActive} onSelectAll={onSelectAll} onSelectNone={onSelectNone} onClose={() => setShowFilter(false)} />
-        )}
-      </AnimatePresence>
-      <AnimatePresence>
         {showWinner && winner && (
-          <WinnerModal book={winner} onClose={onCloseWinner} onSpin={onSpin} />
+          <WinnerModal book={winner} onClose={onCloseWinner} onSpin={onSpin} onStartReading={onGoHome} />
         )}
       </AnimatePresence>
     </div>
